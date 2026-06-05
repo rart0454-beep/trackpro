@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrackPro AI Core</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen font-sans antialiased selection:bg-slate-200">
+
+    <div class="max-w-md mx-auto px-4 py-8 space-y-6">
+        
+        <div class="space-y-1">
+            <h1 class="text-2xl font-light tracking-tight text-slate-900">TrackPro <span class="font-medium text-slate-900">AI</span></h1>
+            <p class="text-xs text-slate-500 tracking-wide font-light">Athletic Scouting Studio</p>
+        </div>
+
+        <div class="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-5">
+            
+            <div class="space-y-1.5">
+                <label class="text-[10px] font-bold tracking-wider text-slate-400 uppercase">1. Core Match Sequence</label>
+                <input type="file" id="videoFile" accept="video/*" class="w-full text-xs text-slate-500 bg-slate-50 p-3 rounded-2xl border border-slate-200/80 focus:outline-none file:mr-3 file:py-1 file:px-2.5 file:rounded-xl file:border-0 file:text-xs file:font-medium file:bg-slate-900 file:text-white hover:file:bg-slate-800 transition">
+            </div>
+
+            <div class="space-y-1.5">
+                <label class="text-[10px] font-bold tracking-wider text-slate-400 uppercase">2. Set Count (1 - 20)</label>
+                <div class="flex gap-3">
+                    <input type="number" id="targetCount" min="1" max="20" value="1" oninput="generateImageUploadInputs()" class="w-20 bg-slate-50 border border-slate-200 rounded-2xl py-2.5 px-3 text-center text-sm font-semibold text-slate-900 focus:outline-none focus:border-slate-400 transition">
+                    <p class="text-[11px] text-slate-400 self-center font-light">Specify Profiles</p>
+                </div>
+            </div>
+
+            <div id="dynamic-image-inputs-container" class="space-y-2.5 pt-1"></div>
+
+            <button onclick="runMultiAnalysis()" class="w-full bg-slate-900 hover:bg-slate-800 text-white font-medium text-xs py-3.5 rounded-2xl transition tracking-wider shadow-sm">
+                RUN TACTICAL SCAN
+            </button>
+
+            <div id="loading-section" class="hidden bg-slate-50 rounded-2xl p-3 flex items-center justify-center gap-3 border border-slate-100">
+                <div class="animate-spin rounded-full h-3.5 w-3.5 border-2 border-slate-900 border-t-transparent"></div>
+                <p class="text-[11px] text-slate-600 font-medium">Processing visual identity matrices...</p>
+            </div>
+        </div>
+
+        <div id="multi-players-dashboard" class="space-y-6"></div>
+        
+    </div>
+
+    <script>
+        // Use the explicit binding address your backend server is deployed on
+        const BACKEND_SERVER_IP = "http://127.0.0.1:8000"; // ← Your actual IP
+
+        window.onload = function() { generateImageUploadInputs(); };
+
+        function generateImageUploadInputs() {
+            let count = parseInt(document.getElementById('targetCount').value) || 1;
+            if (count > 20) count = 20;
+            if (count < 1) count = 1;
+
+            const container = document.getElementById('dynamic-image-inputs-container');
+            container.innerHTML = "";
+
+            for (let i = 1; i <= count; i++) {
+                const rowHTML = `
+                    <div class="flex items-center gap-3 bg-slate-50 border border-slate-200/60 p-2.5 rounded-2xl">
+                        <span class="text-[10px] font-bold text-slate-400 bg-white border border-slate-200 w-6 h-6 rounded-xl flex items-center justify-center shadow-sm">#${i}</span>
+                        <input type="file" class="face-file-inputs w-full text-[11px] text-slate-500 focus:outline-none file:mr-3 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-slate-200 file:text-slate-700 hover:file:bg-slate-300 transition">
+                    </div>
+                `;
+                container.innerHTML += rowHTML;
+            }
+        }
+
+        async function runMultiAnalysis() {
+            const videoFile = document.getElementById('videoFile').files[0];
+            const faceInputs = document.querySelectorAll('.face-file-inputs');
+
+            if (!videoFile) { alert("Please attach the source video file sequence!"); return; }
+
+            document.getElementById('loading-section').classList.remove('hidden');
+            const dashboard = document.getElementById('multi-players-dashboard');
+            dashboard.innerHTML = ""; 
+
+            const formData = new FormData();
+            formData.append("video", videoFile);
+
+            let addedFilesCount = 0;
+            faceInputs.forEach(input => {
+                if (input.files[0]) {
+                    formData.append("face_images", input.files[0]);
+                    addedFilesCount++;
+                }
+            });
+
+            if (addedFilesCount === 0) {
+                alert("Please attach at least one target reference image profile photo!");
+                document.getElementById('loading-section').classList.add('hidden');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${BACKEND_SERVER_IP}/analyze-multiple-players/`, { method: "POST", body: formData });
+                if (!response.ok) throw new Error("Processing failed.");
+                const data = await response.json();
+
+                document.getElementById('loading-section').classList.add('hidden');
+
+                data.players.forEach(player => {
+                    let rawText = player.ai_scout_review;
+                    
+                    // ⚡ BULLETPROOF TEXT PARSER ENGINE
+                    // Convert line breaks and wrap titles into elegant UI blocks
+                    let formattedHTML = rawText
+                        .replace(/\n/g, '<br>')
+                        .replace(/\*\*(.*?)\*\*:/g, '<div class="text-[11px] mb-1"><span class="text-slate-400 font-medium uppercase text-[10px] tracking-wide mr-1.5">$1:</span><span class="text-slate-800 font-semibold">')
+                        .replace(/\*\*(.*?)\*\*\s*<br>/g, '<h4 class="text-slate-900 font-bold text-xs tracking-wide border-b border-slate-100 pb-1 mt-4 mb-2 uppercase">$1</h4>')
+                        .replace(/•\s*\*\*(.*?)\*\*/g, '<p class="pl-3 relative text-slate-600 text-[11px] my-1.5"><span class="absolute left-0 text-slate-400">•</span><strong class="text-slate-900 font-semibold">$1</strong>');
+
+                    const playerCardHTML = `
+                        <div class="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm space-y-4">
+                            <div class="flex items-center gap-3 border-b border-slate-100 pb-3">
+                                <div class="bg-slate-900 text-white w-9 h-9 rounded-2xl flex items-center justify-center font-black text-sm shadow-sm">#${player.target_number}</div>
+                                <div>
+                                    <h3 class="font-bold text-xs text-slate-900 uppercase tracking-wide">Scout Identity Verified</h3>
+                                    <p class="text-[10px] text-slate-400 font-light flex items-center gap-1"><span class="h-1 w-1 rounded-full bg-emerald-500"></span> Matrix calculations logged</p>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-3 text-center">
+                                <div class="bg-slate-50 border border-slate-100 p-3 rounded-2xl">
+                                    <p class="text-[9px] uppercase font-bold tracking-wider text-slate-400 mb-0.5">Peak Velocity</p>
+                                    <p class="text-base font-black text-slate-900">${player.analytics.top_speed_kmh} km/h</p>
+                                </div>
+                                <div class="bg-slate-50 border border-slate-100 p-3 rounded-2xl">
+                                    <p class="text-[9px] uppercase font-bold tracking-wider text-slate-400 mb-0.5">Distance Covered</p>
+                                    <p class="text-base font-black text-slate-900">${player.analytics.distance_covered_meters} m</p>
+                                </div>
+                            </div>
+
+                            <div class="space-y-1.5">
+                                <label class="block text-[9px] font-bold uppercase tracking-wider text-slate-400"><i class="fa-solid fa-map-location-dot mr-1"></i> Positional Tracking Heatmap Matrix</label>
+                                <div class="bg-slate-50 rounded-2xl overflow-hidden border border-slate-100 aspect-video w-full">
+                                    <img src="${player.heatmap_url}?t=${new Date().getTime()}" alt="Tactical Heatmap" class="w-full h-full object-cover">
+                                </div>
+                            </div>
+
+                            <div class="space-y-1.5 bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                                <label class="block text-[9px] font-bold uppercase tracking-wider text-slate-400"><i class="fa-solid fa-brain text-slate-500 mr-1"></i> Generative Evaluation Dossier</label>
+                                <div class="font-sans leading-relaxed text-slate-700">${formattedHTML}</div>
+                            </div>
+                        </div>
+                    `;
+                    dashboard.innerHTML += playerCardHTML;
+                });
+
+            } catch (e) {
+                alert("Network communication dropped. Verify server host bind configurations.");
+                document.getElementById('loading-section').classList.add('hidden');
+            }
+        }
+    </script>
+</body>
+</html>
