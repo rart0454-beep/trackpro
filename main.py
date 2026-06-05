@@ -7,21 +7,15 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
-from deepface import DeepFace
+from skimage.metrics import structural_similarity as ssim
 from groq import Groq
 
 app = FastAPI(title="TrackPro AI RockSolid Engine")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://172.24.160.1:5500",  # ← Add your actual machine IP
-        "http://172.24.160.1:8000",
-        "*"  # Temporarily allow all during dev/debugging
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -30,9 +24,21 @@ os.makedirs("uploads", exist_ok=True)
 os.makedirs("static/heatmaps", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 💡 Make sure your actual Groq key string is inside the quotes!
-GROQ_CLIENT = Groq(api_key="GROQ_API_KEY")
+GROQ_CLIENT = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 model = YOLO("yolov8n.pt").to("cpu")
+
+def match_face(face_path, crop):
+    try:
+        ref = cv2.imread(face_path)
+        if ref is None or crop is None or crop.size == 0:
+            return False
+        crop_resized = cv2.resize(crop, (ref.shape[1], ref.shape[0]))
+        ref_gray = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
+        crop_gray = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2GRAY)
+        score, _ = ssim(ref_gray, crop_gray, full=True)
+        return score > 0.3
+    except Exception:
+        return False
 
 def generate_ai_scout_report(idx, dist, top_spd, avg_spd, stamina):
     try:
@@ -61,23 +67,27 @@ def generate_ai_scout_report(idx, dist, top_spd, avg_spd, stamina):
             max_tokens=200
         )
         return completion.choices[0].message.content.strip()
-    except Exception:
+    except Exception as e:
+        print(f"Groq API Error: {e}")
         return "AI Tactical Scout Report compilation delayed."
+
+@app.get("/")
+def root():
+    return {"status": "TrackPro server is live"}
 
 @app.post("/analyze-multiple-players/")
 async def analyze_multiple_players(
     video: UploadFile = File(...),
     face_images: list[UploadFile] = File(...)
 ):
-
     video_path = os.path.join("uploads", video.filename)
-    with open(video_path, "wb") as f: 
+    with open(video_path, "wb") as f:
         f.write(await video.read())
 
     saved_face_paths = []
     for idx, face_img in enumerate(face_images):
         path = os.path.join("uploads", f"target_{idx}_{face_img.filename}")
-        with open(path, "wb") as f: 
+        with open(path, "wb") as f:
             f.write(await face_img.read())
         saved_face_paths.append(path)
 
@@ -88,7 +98,7 @@ async def analyze_multiple_players(
 
     target_map = {}
     success, initial_frame = cap.read()
-    
+
     if success:
         results = model.track(initial_frame, persist=True, verbose=False, device="cpu")
         if results[0].boxes is not None and results[0].boxes.id is not None:
@@ -101,13 +111,9 @@ async def analyze_multiple_players(
                     if class_id == 0:
                         x1, y1, x2, y2 = map(int, box)
                         crop = initial_frame[y1:y2, x1:x2]
-                        if crop.size > 0:
-                            try:
-                                res = DeepFace.verify(img1_path=face_path, img2_path=crop, model_name="VGG-Face", enforce_detection=False)
-                                if res["verified"] or res["distance"] < 0.65:
-                                    target_map[track_id] = face_idx
-                                    break
-                            except Exception: pass
+                        if match_face(face_path, crop):
+                            target_map[track_id] = face_idx
+                            break
 
     if not target_map:
         for i in range(len(saved_face_paths)):
@@ -141,31 +147,25 @@ async def analyze_multiple_players(
                 if class_id == 0 and track_id in tracking_data:
                     x1, y1, x2, y2 = map(int, box)
                     cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
-                    
+
                     p = tracking_data[track_id]
                     cv2.circle(p["heatmap_matrix"], (cx, cy), 20, 1, -1)
-                    
+
                     if p["last_position"] is not None:
                         pixel_dist = math.sqrt((cx - p["last_position"][0])**2 + (cy - p["last_position"][1])**2)
                         p["total_distance_pixels"] += pixel_dist
                         speed_kh = ((pixel_dist / PIXELS_PER_METER) / (1.0 / fps)) * 3.6
                         if speed_kh < 45: p["speeds_kh"].append(speed_kh)
-                        
+
                     p["last_position"] = (cx, cy)
     cap.release()
 
     output_profiles = []
-    
-    # 💡 SAFE HEATMAP GENERATION ENGINE
-    # Try reading the image asset locally
+
     pitch_bg = cv2.imread("2d_football_pitch.png")
-    
-    # CRITICAL FALLBACK: If missing, build a clean digital pitch array so it NEVER crashes
     if pitch_bg is None:
-        print("⚠️ Warning: '2d_football_pitch.png' not found. Generating digital canvas fallback layer...")
         pitch_bg = np.zeros((height, width, 3), dtype=np.uint8)
-        pitch_bg[:] = (24, 43, 20) # Modern minimalist deep green background hex color
-        # Draw a sleek center circle line geometry
+        pitch_bg[:] = (24, 43, 20)
         cv2.circle(pitch_bg, (int(width/2), int(height/2)), 60, (40, 60, 35), 2)
         cv2.rectangle(pitch_bg, (0, 0), (width, height), (40, 60, 35), 4)
 
@@ -181,13 +181,11 @@ async def analyze_multiple_players(
 
         heatmap_filename = f"heatmap_target_{track_id}.png"
         heatmap_save_path = os.path.join("static", "heatmaps", heatmap_filename)
-        
-        # Safe visualization blending matrix
+
         if np.max(data["heatmap_matrix"]) > 0:
             normalized = cv2.normalize(data["heatmap_matrix"], None, 0, 255, cv2.NORM_MINMAX)
             blurred = cv2.GaussianBlur(np.uint8(normalized), (41, 41), 0)
             color_heatmap = cv2.applyColorMap(blurred, cv2.COLORMAP_JET)
-            
             resized_bg = cv2.resize(pitch_bg, (width, height))
             final_output = cv2.addWeighted(resized_bg, 0.6, color_heatmap, 0.4, 0)
             cv2.imwrite(heatmap_save_path, final_output)
@@ -196,7 +194,7 @@ async def analyze_multiple_players(
 
         output_profiles.append({
             "target_number": data["face_index"] + 1,
-            "heatmap_url": f"http://127.0.0.1:8000/static/heatmaps/{heatmap_filename}",
+            "heatmap_url": f"{os.environ.get('BASE_URL', 'http://127.0.0.1:8000')}/static/heatmaps/{heatmap_filename}",
             "analytics": {
                 "distance_covered_meters": total_meters,
                 "top_speed_kmh": top_speed,
