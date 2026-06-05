@@ -6,3 +6,4 @@ deepface
 groq
 python-multipart
 tf-keras
+numpy
